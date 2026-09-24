@@ -121,7 +121,9 @@ class Settings(BaseSettings):
         default=None,
         description=(
             "Comma-separated list of additional hostnames the egress proxy "
-            "permits. Defaults already cover PyPI, npm, Go modules, and crates.io."
+            "permits. Defaults already cover PyPI, npm, Go modules, and crates.io. "
+            "'example.com' allows it and its subdomains; '*.example.com' allows "
+            "subdomains only; '*' allows any public HTTPS host."
         ),
     )
     skill_deps_path: str = Field(

@@ -204,6 +204,12 @@ async def _startup_egress_proxy(app: FastAPI) -> None:
             "could SSRF Redis/S3 via direct sockets — refusing to enable network."
         )
 
+    if "*" in {h.lower() for h in extra}:
+        logger.warning(
+            "SANDBOX_EGRESS_ALLOWLIST contains '*': sandboxes may reach ANY public "
+            "HTTPS host through the egress proxy (private/internal IPs still refused)"
+        )
+
     logger.info(
         "Sandbox network access ENABLED via egress proxy + firewall",
         port=settings.sandbox_egress_port,

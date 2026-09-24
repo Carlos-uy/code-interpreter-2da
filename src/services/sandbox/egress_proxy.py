@@ -15,6 +15,15 @@ into their env; pip, npm, go, cargo all honor that variable. The proxy:
 Allowlist defaults cover Python (PyPI), Node (npmjs), Go modules, and
 Rust crates so `pip install`, `npm install`, `go get`, `cargo add` work
 out of the box. Add more via SANDBOX_EGRESS_ALLOWLIST=host1,host2.
+
+Allowlist entry syntax:
+
+- `example.com`    -> `example.com` and every subdomain of it.
+- `*.example.com`  -> subdomains only (`www.example.com`, `a.b.example.com`),
+                      NOT the bare `example.com`.
+- `*`              -> any public host. Private/loopback/link-local targets
+                      are still refused, and traffic is still HTTPS-only
+                      (CONNECT) through this proxy.
 """
 
 from __future__ import annotations
@@ -77,13 +86,34 @@ def _is_private_ip(host: str) -> bool:
     )
 
 
+ALLOW_ALL = "*"
+
+
 def _matches_allowlist(host: str, allowlist: Set[str]) -> bool:
-    """True if `host` exactly matches an entry or is a subdomain of one."""
-    host = _normalize_host(host)
-    if host in allowlist:
+    """True if `host` is permitted by any allowlist entry.
+
+    - `*` permits any host (private IPs are rejected separately).
+    - `*.example.com` permits subdomains of `example.com` but not the apex.
+    - `example.com` permits the apex and all its subdomains.
+    """
+    if ALLOW_ALL in allowlist:
         return True
-    # Subdomain match: `files.pypi.org` is allowed when `pypi.org` is in the list.
-    return any(host.endswith("." + entry) for entry in allowlist)
+    host = _normalize_host(host)
+    if not host:
+        return False
+    for entry in allowlist:
+        if entry.startswith("*."):
+            # Subdomain-only wildcard: `*.google.com` -> suffix `.google.com`.
+            suffix = entry[1:]
+            if len(suffix) > 1 and host.endswith(suffix):
+                return True
+            continue
+        if host == entry:
+            return True
+        # Subdomain match: `files.pypi.org` is allowed when `pypi.org` is in the list.
+        if host.endswith("." + entry):
+            return True
+    return False
 
 
 async def _resolve_first_addr(host: str, port: int) -> Optional[tuple[str, int]]:
@@ -165,6 +195,7 @@ class EgressProxy:
             "Sandbox egress proxy started",
             bind=f"{self.bind_host}:{self.port}",
             allowlist_size=len(self.allowlist),
+            allow_all=ALLOW_ALL in self.allowlist,
         )
 
     async def stop(self) -> None:

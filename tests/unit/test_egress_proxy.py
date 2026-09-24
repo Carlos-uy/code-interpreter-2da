@@ -48,6 +48,37 @@ class TestAllowlistMatching:
         assert _normalize_host("[::1]") == "::1"
 
 
+class TestAllowlistWildcards:
+    def test_star_allows_any_host(self):
+        assert _matches_allowlist("anything.example.net", {"*"})
+        assert _matches_allowlist("evil.com", {"pypi.org", "*"})
+
+    def test_subdomain_wildcard_matches_subdomains(self):
+        assert _matches_allowlist("www.google.com", {"*.google.com"})
+        assert _matches_allowlist("a.b.google.com", {"*.google.com"})
+
+    def test_subdomain_wildcard_excludes_apex(self):
+        assert not _matches_allowlist("google.com", {"*.google.com"})
+
+    def test_subdomain_wildcard_no_substring_match(self):
+        assert not _matches_allowlist("evilgoogle.com", {"*.google.com"})
+        assert not _matches_allowlist("google.com.evil.net", {"*.google.com"})
+
+    def test_subdomain_wildcard_case_insensitive(self):
+        assert _matches_allowlist("WWW.Google.COM", {"*.google.com"})
+
+    def test_plain_entry_still_includes_apex_and_subdomains(self):
+        assert _matches_allowlist("google.com", {"google.com"})
+        assert _matches_allowlist("drive.google.com", {"google.com"})
+
+    def test_bare_star_dot_is_not_allow_all(self):
+        assert not _matches_allowlist("example.com", {"*."})
+
+    def test_proxy_normalizes_wildcard_entries(self):
+        proxy = EgressProxy(port=1, allowlist=[" *.Google.com ", "*"])
+        assert proxy.allowlist == {"*.google.com", "*"}
+
+
 class TestPrivateIpDetection:
     def test_loopback(self):
         assert _is_private_ip("127.0.0.1")
@@ -229,3 +260,55 @@ async def test_tunnel_pipes_bytes_when_allowed(monkeypatch):
         await proxy.stop()
         echo_server.close()
         await echo_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_star_allowlist_still_refuses_private_ip():
+    """`*` opens every public host but must never open private targets."""
+    port = _free_port()
+    proxy = EgressProxy(port=port, allowlist={"*"})
+    await proxy.start()
+    try:
+        for target in ("10.0.0.1:443", "127.0.0.1:6379", "169.254.169.254:80"):
+            status, _r, w = await _send_connect(port, target)
+            w.close()
+            assert b"403" in status, (target, status)
+    finally:
+        await proxy.stop()
+
+
+@pytest.mark.asyncio
+async def test_star_allowlist_passes_allowlist_check():
+    """With `*`, an arbitrary host gets past the allowlist (502 on DNS failure,
+    not 403)."""
+    port = _free_port()
+    proxy = EgressProxy(port=port, allowlist={"*"})
+    await proxy.start()
+    try:
+        status, _r, w = await _send_connect(port, "random-host.invalid:443")
+        w.close()
+        assert b"403" not in status, status
+        assert b"502" in status, status
+    finally:
+        await proxy.stop()
+
+
+@pytest.mark.asyncio
+async def test_star_still_rejects_non_connect():
+    port = _free_port()
+    proxy = EgressProxy(port=port, allowlist={"*"})
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        await writer.drain()
+        raw = b""
+        while b"\r\n\r\n" not in raw:
+            chunk = await asyncio.wait_for(reader.read(1024), timeout=2)
+            if not chunk:
+                break
+            raw += chunk
+        writer.close()
+        assert b"405" in raw, raw
+    finally:
+        await proxy.stop()

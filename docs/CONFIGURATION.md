@@ -281,6 +281,16 @@ Off by default — sandboxes have no network access. When enabled, an inline all
 | `SANDBOX_EGRESS_ALLOWLIST` | (registries default)  | Comma-separated list of additional hostnames the proxy permits                    |
 | `SKILL_DEPS_PATH`          | `/opt/skill-deps`     | Host-side directory mounted into every sandbox so install caches compound across runs |
 
+**Allowlist entry syntax** (`SANDBOX_EGRESS_ALLOWLIST`):
+
+| Entry           | Permits                                                              |
+| --------------- | -------------------------------------------------------------------- |
+| `example.com`   | `example.com` and every subdomain (`www.example.com`, `a.b.example.com`) |
+| `*.example.com` | Subdomains only — **not** the bare `example.com`                     |
+| `*`             | Any public host                                                      |
+
+Even with `*`, the proxy still only tunnels HTTPS (`CONNECT`), still refuses hosts that resolve to private/loopback/link-local addresses (Redis, S3, the Docker network, your LAN), and the iptables firewall still blocks sandbox traffic that bypasses the proxy (raw sockets, SSH, clients that ignore `HTTPS_PROXY`). Every tunnel is logged with its destination host.
+
 ### Logging Configuration
 
 | Variable               | Default | Description                                     |
