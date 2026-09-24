@@ -1,0 +1,118 @@
+# ============================================
+# BUILD & PUBLISH CODE-INTERPRETER-2DA
+# Equivalente en GitHub Actions a build_code-interpreter-2da.sh:
+# tests unitarios -> build de la imagen unificada (stage "app") ->
+# push a ghcr.io/<owner>/code-interpreter-2da:latest -> borrado de
+# versiones sin tag (min-versions-to-keep: 1).
+# Se construye en los runners de GitHub, sin depender de la red local.
+# ============================================
+name: Build & Publish Image
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".env.example"
+  workflow_dispatch:
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PACKAGE_NAME: code-interpreter-2da
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit -q
+
+  build:
+    name: Build & push (amd64)
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR exige minúsculas: Carlos-uy -> carlos-uy
+      - name: Compute image name
+        id: image
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "name=ghcr.io/${owner}/${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: app
+          platforms: linux/amd64
+          push: true
+          pull: true
+          # Sin attestations: evita versiones "sin tag" extra en GHCR.
+          provenance: false
+          sbom: false
+          tags: ${{ steps.image.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.image.outputs.created }}
+            org.opencontainers.image.title=${{ env.PACKAGE_NAME }}
+          cache-from: type=gha,scope=${{ env.PACKAGE_NAME }}
+          cache-to: type=gha,scope=${{ env.PACKAGE_NAME }},mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Imagen publicada"
+            echo ""
+            echo "\`${{ steps.image.outputs.name }}:latest\`"
+            echo ""
+            echo "Commit: \`${GITHUB_SHA::7}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    name: Delete untagged versions
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      # Equivalente a cleanup_old_versions() del script local.
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ env.PACKAGE_NAME }}
+          package-type: container
+          min-versions-to-keep: 1
+          delete-only-untagged-versions: true
